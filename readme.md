@@ -51,32 +51,48 @@ Adjust all configurations to match your system.
 Create or edit the netplan configuration:
 
 ```bash
-sudo nano /etc/netplan/01-network.yaml
+sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 
 ```yaml
 network:
   version: 2
   renderer: networkd
-
   ethernets:
     enp1s0f0:
+      match:
+        macaddress: "84:3a:5b:14:e3:5d"
+        name: enp1s0f0
+      set-name: eth0
       dhcp4: true
       optional: true
-
+  vlans:
+    vlan20:
+      id: 20
+      link: enp1s0f0
+      dhcp4: true
+      optional: true
+      macaddress: "02:3a:5b:14:e3:5e"
+    vlan40:
+      id: 40
+      link: enp1s0f0
+      dhcp4: true
+      optional: true
+      macaddress: "02:3a:5b:14:e3:5f"
   wifis:
     wlo1:
       dhcp4: true
       optional: true
       activation-mode: manual
       access-points:
-        "SSID":
-          password: "PASSWORD"
+        "Sedentary Sheep":
+          password: ""
 ```
 
 Apply the configuration:
 
 ```bash
+sudo netplan generate
 sudo netplan apply
 ```
 
@@ -95,10 +111,10 @@ sudo nano /etc/systemd/network/10-enp1s0f0-static.network
 Name=enp1s0f0
 
 [Network]
-Address=10.10.0.50/24
+Address=10.10.30.10/16
 Gateway=10.10.0.1
 DNS=10.10.0.1
-RequiredForOnline=no
+# RequiredForOnline=no
 ```
 
 Restart networkd:
@@ -132,7 +148,7 @@ sudo nano /usr/local/sbin/network-failover.sh
 ```bash
 #!/bin/bash
 
-ETH="enp1s0f0"
+ETH="eth0"
 WIFI="wlo1"
 LOGTAG="network-failover"
 
@@ -140,18 +156,20 @@ log() {
   logger -t "$LOGTAG" "$1"
 }
 
-sleep 10
+sleep 5
 
 if [[ -e /sys/class/net/$ETH/carrier ]] && [[ $(cat /sys/class/net/$ETH/carrier) -eq 1 ]]; then
   log "Ethernet carrier detected. Waiting for DHCP."
-  sleep 10
+  sleep 5
 
   if networkctl status "$ETH" | grep -q "Address:"; then
-    log "Ethernet DHCP successful."
+    log "Ethernet DHCP successful. Disabling Wi-Fi."
+    ip link set "$WIFI" down
     exit 0
   else
     log "Ethernet DHCP failed. Applying static configuration."
     networkctl reconfigure "$ETH"
+    ip link set "$WIFI" down
     exit 0
   fi
 else
