@@ -151,14 +151,41 @@ mv sops-v3.11.0.linux.amd64 /usr/local/bin/sops
 chmod +x /usr/local/bin/sops
 ```
 
-Install SOPS kubectl plugin
-https://github.com/craftypath/kubectl-sops/releases/
+Install SOPS Operator
+[https://github.com/craftypath/kubectl-sops/releases/](https://github.com/isindir/sops-secrets-operator)
 ```bash
-curl -LO https://github.com/craftypath/kubectl-sops/releases/download/v0.4.0/kubectl-sops_0.4.0_linux_amd64.tar.gz
-tar -xzf kubectl-sops_0.4.0_linux_amd64.tar.gz
-chmod +x kubectl-sops
-sudo mv kubectl-sops /usr/local/bin/
-kubectl plugin list
+cat << EOF | helm upgrade --install sops-operator sops-operator/sops-secrets-operator \
+  --namespace sops-operator --values -
+secretsAsFiles:
+- mountPath: /etc/sops-age-key
+  name: sops-age-key
+  secretName: age-key
+extraEnv:
+- name: SOPS_AGE_KEY_FILE
+  value: /etc/sops-age-key/key.txt
+EOF
+```
+
+or create values.yaml and install
+```bash
+nano values.yaml
+```
+```bash
+secretsAsFiles:
+- mountPath: /etc/sops-age-key
+  name: sops-age-key
+  secretName: age-key
+
+extraEnv:
+- name: SOPS_AGE_KEY_FILE
+  value: /etc/sops-age-key/key.txt
+```
+```bash
+helm install sops-operator sops-operator/sops-secrets-operator \
+  --namespace sops-operator --values=infrastructure/sops-operator/values.yaml
+```
+```bash
+ kubectl create secret generic -n sops-operator age-key --from-file=key.txt
 ```
 
 Generate a SOPS key
@@ -180,10 +207,15 @@ creation_rules:
 ```
 Encrypt with:
 ```bash
-cp infrastructure/<dir>/secrets.yaml infrastructure/<dir>/secrets.enc.yaml
-sops --encrypt --in-place infrastructure/<dir>/secrets.enc.yaml
+sops -e secret.yaml > secret.enc.yaml
+```
+or
+```bash
+sops -e ~/k3s-cluster/infrastructure/<dir>/secrets.yaml > ~/k3s-cluster/infrastructure/<dir>/secrets.enc.yaml
 ```
 Verify with:
 ```bash
-sops -d infrastructure/traefik/secrets.enc.yaml
+grep ENC secret.enc.yaml
+kubectl apply -f secret.enc.yaml
+kubectl get secret some-token -n default -o jsonpath='{.data.password}' | base64 -d
 ```
