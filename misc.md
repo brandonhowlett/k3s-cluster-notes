@@ -154,6 +154,10 @@ chmod +x /usr/local/bin/sops
 Install SOPS Operator
 [https://github.com/craftypath/kubectl-sops/releases/](https://github.com/isindir/sops-secrets-operator)
 ```bash
+helm repo add sops-operator https://isindir.github.io/sops-secrets-operator/
+helm repo update
+```
+```bash
 cat << EOF | helm upgrade --install sops-operator sops-operator/sops-secrets-operator \
   --namespace sops-operator --values -
 secretsAsFiles:
