@@ -1,86 +1,123 @@
-Install age
-```bash
-sudo apt install age
+# SOPS + Age + Kubernetes (Bare Metal)
+
+This document describes installing and configuring **SOPS with Age
+encryption** and the **isindir SOPS Secrets Operator** for Kubernetes
+(k3s), starting from bare metal.
+
+## 1. Install Age
+
+``` bash
+sudo apt update
+sudo apt install -y age
 age --version
 ```
-Generate an age key for SOPS
-```bash
+
+## 2. Generate an Age key for SOPS
+
+``` bash
 mkdir -p ~/.config/sops/age
 age-keygen -o ~/.config/sops/age/keys.txt
 chmod 600 ~/.config/sops/age/keys.txt
-sed '/^#/d' ~/.config/sops/age/keys.txt > ~/.config/sops/age/key.txt
-```
-Install SOPS
-https://github.com/getsops/sops/releases
-```bash
-curl -LO https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
-mv sops-v3.11.0.linux.amd64 /usr/local/bin/sops
-chmod +x /usr/local/bin/sops
 ```
 
-Install SOPS Operator
-[https://github.com/craftypath/kubectl-sops/releases/](https://github.com/isindir/sops-secrets-operator)
-```bash
+Strip comments and store only private key:
+
+``` bash
+sed '/^#/d' ~/.config/sops/age/keys.txt > ~/.config/sops/age/key.txt
+chmod 600 ~/.config/sops/age/key.txt
+```
+
+Extract public key:
+
+``` bash
+grep -o 'age1[0-9a-z]*' ~/.config/sops/age/keys.txt
+```
+
+## 3. Install SOPS
+
+``` bash
+sudo apt install -y sops
+sops --version
+```
+
+## 4. Install SOPS Secrets Operator
+
+``` bash
 helm repo add sops-operator https://isindir.github.io/sops-secrets-operator/
 helm repo update
 ```
-```bash
-cat << EOF | helm upgrade --install sops-operator sops-operator/sops-secrets-operator \
-  --namespace sops-operator --create-namespace --values -
-secretsAsFiles:
-- mountPath: /etc/sops-age-key
-  name: sops-age-key
-  secretName: age-key
-extraEnv:
-- name: SOPS_AGE_KEY_FILE
-  value: /etc/sops-age-key/key.txt
-EOF
+
+## 5. Create Age Key Secret
+
+``` bash
+kubectl create namespace sops-operator
+kubectl create secret generic age-key \
+  -n sops-operator \
+  --from-file=key.txt=~/.config/sops/age/key.txt
 ```
 
-or create values.yaml and install
-```bash
-nano values.yaml
-```
-```bash
+## 6. Operator values.yaml
+
+``` yaml
 secretsAsFiles:
-- mountPath: /etc/sops-age-key
-  name: sops-age-key
-  secretName: age-key
+  - name: sops-age-key
+    secretName: age-key
+    mountPath: /etc/sops-age-key
 
 extraEnv:
-- name: SOPS_AGE_KEY_FILE
-  value: /etc/sops-age-key/key.txt
+  - name: SOPS_AGE_KEY_FILE
+    value: /etc/sops-age-key/key.txt
 ```
-```bash
+
+## 7. Install Operator
+
+``` bash
 helm install sops-operator sops-operator/sops-secrets-operator \
-  --namespace sops-operator --create-namespace --values=infrastructure/sops-operator/values.yaml
-```
-Create age-key secret
-```bash
- kubectl create secret generic -n sops-operator age-key --from-file=~/.config/sops/age/key.txt
+  --namespace sops-operator \
+  --create-namespace \
+  --values values.yaml
 ```
 
-In k3s-cluster root
-```bash
-nano .sops.yaml
-```
-```bash
+## 8. .sops.yaml
+
+``` yaml
 creation_rules:
   - path_regex: infrastructure/.*/secrets\.enc\.yaml$
     encrypted_regex: '^(data|stringData)$'
-    age: age1ns7vp2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    age:
+      - age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
-Encrypt with:
-```bash
-sops -e secret.yaml > secret.enc.yaml
+
+## 9. Example SopsSecret
+
+``` yaml
+apiVersion: isindir.github.com/v1alpha3
+kind: SopsSecret
+metadata:
+  name: test-sopssecret
+  namespace: default
+spec:
+  suspend: false
+  secretTemplates:
+    - name: some-token
+      stringData:
+        password: test
 ```
-or
-```bash
-sops -e ~/k3s-cluster/infrastructure/<dir>/secrets.yaml > ~/k3s-cluster/infrastructure/<dir>/secrets.enc.yaml
+
+Encrypt:
+
+``` bash
+sops -e test-secret.yaml > test-secret.enc.yaml
 ```
-Verify with:
-```bash
-grep ENC secret.enc.yaml
-kubectl apply -f secret.enc.yaml
+
+Apply:
+
+``` bash
+kubectl apply -f test-secret.enc.yaml
+```
+
+## 10. Verify
+
+``` bash
 kubectl get secret some-token -n default -o jsonpath='{.data.password}' | base64 -d
 ```
