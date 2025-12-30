@@ -1,4 +1,4 @@
-# SOPS + Age + Kubernetes
+# SOPS + Age + SOPS Operator
 
 This document describes installing and configuring **SOPS with Age
 encryption** and the **isindir SOPS Secrets Operator** for Kubernetes
