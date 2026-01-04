@@ -1,7 +1,7 @@
-➜  k3s-cluster git:(main) ✗ ./print.sh
 === Directory Tree ===
-/home/brandon/k3s-cluster
+/home/brandon/k3s-smarthome
 ├── bootstrap
+│   ├── 00-host-init.sh
 │   ├── 00-host.sh
 │   ├── 01-cluster.sh
 │   ├── 02-infra.sh
@@ -20,13 +20,13 @@
 │   └── wrapper.sh
 ├── docs
 │   └── README.md
+├── dump.sh
 ├── helm
 │   ├── apps
 │   │   ├── debug
 │   │   │   └── busybox.yaml
 │   │   ├── home-assistant
 │   │   │   ├── Chart.yaml
-│   │   │   ├── defaultValues.yaml
 │   │   │   ├── k8s
 │   │   │   │   ├── 00-namespace.yaml
 │   │   │   │   ├── 30-certificates.yaml
@@ -39,58 +39,41 @@
 │   │           ├── 40-ingress.yaml
 │   │           ├── deployment.yaml
 │   │           └── service.yaml
-│   ├── infra
-│   │   ├── operators
-│   │   │   ├── cert-manager
-│   │   │   │   ├── k8s
-│   │   │   │   └── values.yaml
-│   │   │   ├── cloudflared
-│   │   │   │   ├── k8s
-│   │   │   │   │   ├── 10-secret.sops.yaml
-│   │   │   │   │   └── secret.yaml
-│   │   │   │   └── values.yaml
-│   │   │   ├── sops-operator
-│   │   │   │   ├── k8s
-│   │   │   │   │   └── example-secret.yaml
-│   │   │   │   └── values.yaml
-│   │   │   └── traefik
-│   │   │       ├── Chart.yaml
-│   │   │       ├── k8s
-│   │   │       │   ├── 10-secret.sops.yaml
-│   │   │       │   ├── 20-certificates.yaml
-│   │   │       │   ├── 40-ingress.yaml
-│   │   │       │   └── secret.yaml
-│   │   │       ├── templates
-│   │   │       │   ├── dynamic-configmap.yaml
-│   │   │       │   └── plugins-pvc.yaml
-│   │   │       └── values.yaml
-│   │   └── static
-│   │       ├── issuers
-│   │       │   └── k8s
-│   │       │       ├── 10-secret.sops.yaml
-│   │       │       ├── 50-clusterIssuers.yaml
-│   │       │       └── secret.yaml
-│   │       └── namespaces
-│   │           ├── 00-cert-manager.yaml
-│   │           ├── 00-traefik.yaml
-│   │           ├── 30-sops-operator.yaml
-│   │           └── 50-cloudflared.yaml
-│   └── platform
-├── manifests
-│   └── certs
-│       ├── local-ca.crt
-│       ├── local-cert.pem
-│       ├── local-key.pem
-│       ├── smarthome-root-ca.crt
-│       ├── smarthome-root-ca.key
-│       ├── smarthome-root-ca.srl
-│       ├── wildcard.cnf
-│       └── wildcard.csr
+│   └── infra
+│       ├── operators
+│       │   ├── cert-manager
+│       │   │   └── values.yaml
+│       │   ├── cloudflared
+│       │   │   ├── k8s
+│       │   │   │   └── 10-secret.sops.yaml
+│       │   │   └── values.yaml
+│       │   ├── sops-operator
+│       │   │   └── values.yaml
+│       │   └── traefik
+│       │       ├── Chart.yaml
+│       │       ├── k8s
+│       │       │   ├── 10-secret.sops.yaml
+│       │       │   ├── 20-certificates.yaml
+│       │       │   └── 40-ingress.yaml
+│       │       ├── templates
+│       │       │   ├── dynamic-configmap.yaml
+│       │       │   └── plugins-pvc.yaml
+│       │       └── values.yaml
+│       └── static
+│           ├── issuers
+│           │   └── k8s
+│           │       ├── 10-secret.sops.yaml
+│           │       └── 50-clusterIssuers.yaml
+│           └── namespaces
+│               ├── 00-cert-manager.yaml
+│               ├── 00-traefik.yaml
+│               ├── 30-sops-operator.yaml
+│               └── 50-cloudflared.yaml
 ├── pki
 │   └── smarthome-root-ca.crt
-└── print.sh
+└── versions.env
 
-32 directories, 57 files
+27 directories, 46 files
 === File Contents ===
 >>> .gitignore <<<
 # secret files
@@ -114,6 +97,183 @@ creation_rules:
     age:
       - age1pqkt694pps8jf408tmn8gg6692mpvh23nw9jvqsfxayy9fjth9msps9fcu
 
+>>> bootstrap/00-host-init.sh <<<
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =========================================================
+# Bare-metal Ubuntu Server Bootstrap
+# =========================================================
+# Installs Oh My Zsh, configures SSH, applies network configuration,
+# and enforces basic security best practices.
+# =========================================================
+
+# -------------------------------------------------------------------
+# Helper Functions
+# -------------------------------------------------------------------
+retry() {
+  local n=${RETRY_ATTEMPTS:-5}
+  local delay=${RETRY_DELAY:-5}
+  local i=1
+  until "$@"; do
+    if [[ $i -ge $n ]]; then
+      echo "Command failed after $n attempts: $*"
+      return 1
+    fi
+    echo "Retry $i/$n: $*"
+    i=$((i+1))
+    sleep $delay
+  done
+}
+
+confirm() {
+  read -r -p "$1 [y/N] " response
+  case "$response" in
+    [yY][eE][sS]|[yY]) true ;;
+    *) false ;;
+  esac
+}
+
+# -------------------------------------------------------------------
+# 1. Update & Upgrade System
+# -------------------------------------------------------------------
+echo "=== Updating system packages ==="
+sudo apt update && sudo apt upgrade -y
+
+# -------------------------------------------------------------------
+# 2. Install essential packages
+# -------------------------------------------------------------------
+echo "=== Installing essential packages ==="
+sudo apt install -y curl wget git zsh nano htop ufw net-tools
+
+# -------------------------------------------------------------------
+# 3. Setup Oh My Zsh
+# -------------------------------------------------------------------
+if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+  echo "=== Installing Oh My Zsh ==="
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+else
+  echo "Oh My Zsh already installed — skipping"
+fi
+
+# Set zsh as default shell
+if [[ "$SHELL" != "$(which zsh)" ]]; then
+  echo "Setting zsh as default shell"
+  chsh -s "$(which zsh)"
+fi
+
+# -------------------------------------------------------------------
+# 4. SSH Configuration
+# -------------------------------------------------------------------
+echo "=== Configuring SSH ==="
+
+# Ensure ~/.ssh directory exists
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+
+# Add public key if not already present
+PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILhGEd7XNySmcz66XG+uStnnsfjy6zjKtExayBPcwX93 brand@Latitude"
+if ! grep -qF "$PUBKEY" "$HOME/.ssh/authorized_keys" 2>/dev/null; then
+  echo "$PUBKEY" >> "$HOME/.ssh/authorized_keys"
+  chmod 600 "$HOME/.ssh/authorized_keys"
+  echo "Added SSH public key"
+else
+  echo "SSH public key already present — skipping"
+fi
+
+# Remove cloud-init SSH config if present
+if [[ -f /etc/ssh/sshd_config.d/50-cloud-init.conf ]]; then
+  sudo rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+  echo "Removed cloud-init SSH config"
+fi
+
+# Enable PubkeyAuthentication in main sshd_config
+if sudo grep -q "^#PubkeyAuthentication yes" /etc/ssh/sshd_config; then
+  sudo sed -i 's/^#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+  echo "Enabled PubkeyAuthentication in sshd_config"
+fi
+
+# Create local network SSH restrictions
+sudo tee /etc/ssh/sshd_config.d/10-local-network.conf > /dev/null <<'EOF'
+Match Address 10.10.0.0/16
+    PasswordAuthentication no
+    PubkeyAuthentication yes
+Match Address 10.50.0.0/16
+    PasswordAuthentication no
+    PubkeyAuthentication yes
+EOF
+echo "Created local network SSH restrictions"
+
+# Reload SSH to apply changes
+sudo systemctl reload ssh
+echo "SSH service reloaded"
+
+# -------------------------------------------------------------------
+# 5. Apply Netplan network configuration
+# -------------------------------------------------------------------
+echo "=== Applying Netplan configuration ==="
+
+sudo tee /etc/netplan/50-cloud-init.yaml > /dev/null <<'EOF'
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp1s0:
+      match:
+        macaddress: "52:54:00:56:3c:b8"
+        name: enp1s0
+      set-name: eth0
+      dhcp4: false
+      optional: true
+    enp2s0:
+      match:
+        macaddress: "52:54:00:56:3c:b9"
+        name: enp2s0
+      set-name: eth1
+      dhcp4: true
+      optional: true
+EOF
+
+sudo netplan generate
+sudo netplan apply
+echo "Netplan applied successfully"
+
+# -------------------------------------------------------------------
+# 6. Configure static IP for eth0
+# -------------------------------------------------------------------
+echo "=== Configuring static IP for eth0 ==="
+
+sudo tee /etc/systemd/network/10-eth0-static.network > /dev/null <<'EOF'
+[Match]
+Name=eth0
+
+[Network]
+Address=10.10.30.5/16
+Gateway=10.10.0.1
+DNS=10.10.0.1
+RequiredForOnline=no
+EOF
+
+sudo systemctl restart systemd-networkd
+echo "Static IP applied and network restarted"
+
+# -------------------------------------------------------------------
+# 7. Optional: Enable firewall
+# -------------------------------------------------------------------
+if confirm "Would you like to enable UFW firewall with default deny incoming?"; then
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  sudo ufw allow ssh
+  sudo ufw enable
+  echo "UFW firewall enabled"
+fi
+
+# -------------------------------------------------------------------
+# 8. Completion
+# -------------------------------------------------------------------
+echo "=== Bootstrap complete ==="
+echo "Please log out and log back in for zsh default shell to take effect."
+echo "Check network with: ip addr show && ping 10.10.0.1"
 >>> bootstrap/00-host.sh <<<
 #!/usr/bin/env bash
 set -euo pipefail
@@ -211,17 +371,32 @@ echo "=== Phase 00 complete: tooling + repo config ready ==="
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/../versions.env"
+
 echo "=== Phase 01: Cluster Bootstrap ==="
 
 KUBECONFIG_FILE="$HOME/.kube/config"
-CALICO_VERSION="v3.31.3"
 
 # -------------------------------------------------------------------
-# Helper: retry command n times with delay
+# Version preflight
+# -------------------------------------------------------------------
+required_versions=(K3S_VERSION HELM_VERSION CALICO_VERSION)
+
+for var in "${required_versions[@]}"; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: Required version variable '$var' is not set in versions.env"
+    exit 1
+  fi
+done
+
+# -------------------------------------------------------------------
+# Helper: retry command n times with optional delay
 # -------------------------------------------------------------------
 retry() {
-  local n=5
-  local delay=3
+  local n=${RETRY_ATTEMPTS:-5}
+  local delay=${RETRY_DELAY:-5}
   local i=1
   until "$@"; do
     if [[ $i -ge $n ]]; then
@@ -235,7 +410,7 @@ retry() {
 }
 
 # -------------------------------------------------------------------
-# Install k3s
+# Install K3s
 # -------------------------------------------------------------------
 install_k3s() {
   if systemctl is-active --quiet k3s; then
@@ -243,10 +418,11 @@ install_k3s() {
     return
   fi
 
-  echo ">>> Installing k3s (no CNI, no Traefik)"
+  echo ">>> Installing k3s (no CNI, no Traefik, secrets encryption enabled)"
   retry curl -sfL https://get.k3s.io | \
     K3S_KUBECONFIG_MODE="644" \
-    INSTALL_K3S_EXEC="--flannel-backend=none --cluster-cidr=10.10.250.0/24 --disable-network-policy --disable=traefik" \
+    INSTALL_K3S_VERSION="${K3S_VERSION}" \
+    INSTALL_K3S_EXEC="--flannel-backend=none --cluster-cidr=10.10.250.0/24 --disable=traefik --secrets-encryption" \
     sh -
 }
 
@@ -271,25 +447,65 @@ setup_kubeconfig() {
 }
 
 # -------------------------------------------------------------------
+# Install Helm (with version check)
+# -------------------------------------------------------------------
+install_helm() {
+  if ! command -v helm >/dev/null 2>&1 || [[ "$(helm version --short | cut -d'+' -f1)" != "$HELM_VERSION" ]]; then
+    echo ">>> Installing or upgrading Helm to ${HELM_VERSION}"
+    curl -sfL https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz | tar xz
+    sudo mv linux-amd64/helm /usr/local/bin/helm
+    sudo chmod +x /usr/local/bin/helm
+    rm -rf linux-amd64
+  fi
+}
+
+# -------------------------------------------------------------------
+# Calico namespace setup with Pod Security
+# -------------------------------------------------------------------
+setup_calico_namespace() {
+  echo ">>> Ensuring calico-system namespace exists with Pod Security labels"
+  kubectl create namespace calico-system --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label namespace calico-system pod-security.kubernetes.io/enforce=baseline --overwrite
+  kubectl label namespace calico-system pod-security.kubernetes.io/enforce-version=latest --overwrite
+}
+
+# -------------------------------------------------------------------
 # Install Calico operator + CRDs
 # -------------------------------------------------------------------
 install_calico_operator() {
   echo ">>> Installing Calico operator and CRDs"
 
   # Pre-check if CRDs exist
-  if kubectl get crds | grep -q "tigera"; then
-    echo "Calico CRDs already installed — skipping"
-  else
+  required_crds=(
+    bgppeers.crd.projectcalico.org
+    felixconfigurations.crd.projectcalico.org
+    globalnetworkpolicies.crd.projectcalico.org
+    # add all mandatory CRDs explicitly
+  )
+
+  missing_crd=false
+  for crd in "${required_crds[@]}"; do
+    if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+      missing_crd=true
+      break
+    fi
+  done
+
+  if $missing_crd; then
+    echo "Applying Calico operator CRDs..."
     retry kubectl apply -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/operator-crds.yaml"
+  else
+    echo "All Calico CRDs already installed"
   fi
 
-  # Pre-check if operator deployment exists
+  # Install operator if not present
   if kubectl get deployment tigera-operator -n tigera-operator >/dev/null 2>&1; then
     echo "tigera-operator deployment already exists — skipping"
   else
     retry kubectl apply -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/tigera-operator.yaml"
   fi
 
+  # Wait for operator to become available
   echo ">>> Waiting for tigera-operator deployment to be available"
   kubectl wait -n tigera-operator \
     --for=condition=Available deployment/tigera-operator \
@@ -305,10 +521,6 @@ install_calico_operator() {
 # -------------------------------------------------------------------
 apply_calico() {
   echo ">>> Applying Calico installation manifests"
-  if kubectl get namespace calico-system >/dev/null 2>&1; then
-    echo "calico-system namespace exists — applying manifests"
-  fi
-
   retry kubectl apply -f bootstrap/calico.yaml
 
   echo ">>> Waiting for all Calico pods to be Ready"
@@ -335,6 +547,8 @@ verify_cluster() {
 # -------------------------------------------------------------------
 install_k3s
 setup_kubeconfig
+install_helm
+setup_calico_namespace
 install_calico_operator
 apply_calico
 verify_cluster
@@ -345,8 +559,31 @@ echo "=== Phase 01 complete: cluster ready ==="
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# -------------------------------------------------------------------
+# Paths and versions
+# -------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/../versions.env"
+
 echo "=== Phase 02: Infrastructure Bootstrap ==="
+
+# -------------------------------------------------------------------
+# Version preflight
+# -------------------------------------------------------------------
+required_versions=(
+  CERT_MANAGER_CHART_VERSION
+  TRAEFIK_CHART_VERSION
+  SOPS_OPERATOR_CHART_VERSION
+  CLOUDFLARED_CHART_VERSION
+)
+
+for var in "${required_versions[@]}"; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: Required version variable '$var' is not set in versions.env"
+    exit 1
+  fi
+done
 
 # -------------------------------------------------------------------
 # Helm helper
@@ -355,13 +592,28 @@ helm_install_or_upgrade() {
   local name="$1"
   local chart="$2"
   local namespace="$3"
-  local values="${4:-}"
+  local version="$4"
+  local values="${5:-}"
 
-  echo ">>> Installing/upgrading Helm chart: $name in $namespace"
+  echo ">>> Installing/upgrading Helm chart: $name (${version}) in namespace: $namespace"
+
+  # Ensure namespace exists
   kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-  local args=(upgrade --install "$name" "$chart" --namespace "$namespace")
+  # Strip leading 'v' from version if present
+  version="${version#v}"
+
+  local args=(
+    upgrade --install "$name" "$chart"
+    --namespace "$namespace"
+    --version "v$version"
+    --wait
+    --timeout 5m
+    --atomic
+  )
+
   [[ -f "$values" ]] && args+=(--values "$values")
+
   helm "${args[@]}"
 }
 
@@ -371,6 +623,7 @@ helm_install_or_upgrade() {
 for cmd in kubectl helm sops; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found, install or run 01-cluster.sh first"; exit 1; }
 done
+
 kubectl get nodes >/dev/null
 
 # -------------------------------------------------------------------
@@ -389,34 +642,45 @@ done
 helm repo update
 
 # -------------------------------------------------------------------
-# Apply static resources
+# Apply static resources (namespaces first)
 # -------------------------------------------------------------------
 echo ">>> Applying namespaces"
 kubectl apply -f "${ROOT_DIR}/helm/infra/static/namespaces"
 
-echo ">>> Applying issuers (ClusterIssuers, Root CAs)"
-kubectl apply -f "${ROOT_DIR}/helm/infra/static/issuers"
-
 # -------------------------------------------------------------------
-# Install operators via Helm
+# Install operators via Helm (repo charts, deterministic order)
 # -------------------------------------------------------------------
-declare -A OPERATORS=(
-  [cert-manager]="${ROOT_DIR}/helm/infra/operators/cert-manager"
-  [traefik]="${ROOT_DIR}/helm/infra/operators/traefik"
-  [sops-operator]="${ROOT_DIR}/helm/infra/operators/sops-operator"
-  [cloudflared]="${ROOT_DIR}/helm/infra/operators/cloudflared"
+OPERATORS=(
+  cert-manager
+  traefik
+  sops-operator
+  cloudflared
 )
 
-for op in "${!OPERATORS[@]}"; do
-  CHART_DIR="${OPERATORS[$op]}"
-  VALUES_FILE="$CHART_DIR/values.yaml"
-  helm_install_or_upgrade "$op" "$CHART_DIR" "$op" "$VALUES_FILE"
+declare -A OPERATOR_CHARTS=(
+  [cert-manager]=jetstack/cert-manager
+  [traefik]=traefik/traefik
+  [sops-operator]=sops-operator/sops-operator
+  [cloudflared]=community-charts/cloudflared
+)
 
-  # Wait for deployment if exists
-  if kubectl get deployment -n "$op" >/dev/null 2>&1; then
-    kubectl rollout status deployment -n "$op" --timeout=180s
-  fi
+for op in "${OPERATORS[@]}"; do
+  CHART_REF="${OPERATOR_CHARTS[$op]}"
+  CHART_VER_VAR="${op//-/_}"
+  CHART_VER_VAR="${CHART_VER_VAR^^}_CHART_VERSION"
+  CHART_VER="${!CHART_VER_VAR}"
+
+  VALUES_FILE="${ROOT_DIR}/helm/infra/values/${op}.yaml"
+  [[ -f "$VALUES_FILE" ]] || VALUES_FILE=""
+
+  helm_install_or_upgrade "$op" "$CHART_REF" "$op" "$CHART_VER" "$VALUES_FILE"
 done
+
+# -------------------------------------------------------------------
+# Apply issuers (ClusterIssuers, Root CAs) after operators
+# -------------------------------------------------------------------
+echo ">>> Applying issuers (ClusterIssuers, Root CAs)"
+kubectl apply -f "${ROOT_DIR}/helm/infra/static/issuers"
 
 # -------------------------------------------------------------------
 # Verification
@@ -424,7 +688,7 @@ done
 echo ">>> Verifying infrastructure state"
 kubectl get pods --all-namespaces
 kubectl get ingressclasses
-kubectl get crds | grep -E 'traefik|cert-manager|sops'
+kubectl get crds | grep -E 'traefik|cert-manager|sops' || true
 
 echo "=== Phase 02 complete: infrastructure + operators ready ==="
 
@@ -1021,6 +1285,24 @@ kubectl get ingressclasses || true
 echo "=== All phases completed successfully ==="
 
 >>> docs/README.md <<<
+
+>>> dump.sh <<<
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(pwd)"
+
+# Show directory tree
+echo "=== Directory Tree ==="
+tree "$ROOT_DIR"
+
+# Cat all tracked or unignored files
+echo "=== File Contents ==="
+git ls-files --exclude-standard --others --cached -z | while IFS= read -r -d '' file; do
+    echo ">>> $file <<<"
+    cat "$file"
+    echo
+done
 
 >>> helm/apps/debug/busybox.yaml <<<
 apiVersion: v1
@@ -2018,3 +2300,48 @@ s6jh+3lmjUdRVm5uxvRF96i9ofDTcuuDTfKRWy/c3okqQYoJ3kE5ncng73IPjUy5
 hXQzRurcv3E1kYeK8lKVlj+DpyvCxR17GoZG9yncFssv8mM25ykIKlq5dpNm9p9H
 OUOktBeJ1AzoeDYLc2VcF9Ql4/gVZcoVMdHUUkXqTw==
 -----END CERTIFICATE-----
+
+>>> versions.env <<<
+# =============================================================================
+# VERSION PINNING — Central Source of Truth for Bootstrap Project
+# =============================================================================
+
+# === K3s / Kubernetes ===
+# The bootstrap script does not currently pin a version, so choose a stable
+# release track you intend to deploy.
+K3S_VERSION="1.31.14+k3s1"
+
+# === CNI / Calico ===
+# Pinning exactly what the bootstrap script references.
+CALICO_VERSION="3.31.3"
+
+# === Helm ===
+# Project does not currently install a pinned Helm binary version.
+HELM_VERSION="3.14.2"
+
+# === Operators / Infrastructure Charts ===
+
+# cert-manager — used to manage certificates
+CERT_MANAGER_CHART_VERSION="1.14.4"
+
+# Traefik — ingress controller chart (local copy under infra/operators)
+TRAEFIK_CHART_VERSION="26.0.0"
+
+# SOPS Secrets Operator
+SOPS_OPERATOR_CHART_VERSION="0.15.0"
+
+# cloudflared — Argo Tunnel (local chart)
+CLOUDFLARED_CHART_VERSION="0.6.0"
+
+# === Static Manifests / Misc ===
+
+# None required here unless you add additional manifests.
+
+# === NOTES ===
+# 1. Every chart referenced for installation in bootstrap/02-infra.sh
+#    should include a matching --version flag in Helm install/upgrade calls.
+# 2. For K3s_VERSION, use the same version via the INSTALL_K3S_VERSION
+#    environment variable in your install_k3s function.
+# 3. Your local infra operator charts under helm/infra/operators/
+#    should have explicit version fields in their Chart.yaml that match
+#    the above pinned versions.
